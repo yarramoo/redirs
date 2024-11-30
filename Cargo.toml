@@ -1,0 +1,9 @@
+[package]
+name = "redirs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dashmap = "6.1.0"
+nom = "7.1.3"
+thiserror = "2.0.3"
