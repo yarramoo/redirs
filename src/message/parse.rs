@@ -1,3 +1,5 @@
+use core::str;
+
 use nom::{
     branch::alt,
     bytes::complete::{tag, take, take_while},
@@ -12,108 +14,147 @@ use nom::{
 
 use super::Message;
 
-fn parse_simple_string(i: &[u8]) -> IResult<&[u8], Message> {
-    let (remaining, parsed) = delimited(
-        tag("+"),
-        take_while(|b| b != b'\r' && b != b'\n'),
-        tag("\r\n"),
-    )(i)?;
-    let parsed_string = String::from_utf8_lossy(parsed).to_string();
-    Ok((remaining, Message::SimpleString(parsed_string)))
+const CRLF: &[u8] = b"\r\n";
+
+macro_rules! check_tag {
+    ($target:expr, $input:expr) => {{
+        // Safely check and consume the first byte of the input
+        if let Some(&tag) = ($input).get(0) {
+            assert_eq!(tag, $target, "Expected tag {:?}, but found {:?}", $target, tag);
+            $input = &$input[1..]; // Update the input reference
+        } else {
+            panic!("Input is empty, expected tag {:?}", $target);
+        }
+    }};
 }
 
-fn parse_error(i: &[u8]) -> IResult<&[u8], Message> {
-    let (remaining, parsed) = delimited(
-        tag("-"),
-        take_while(|b| b != b'\r' && b != b'\n'),
-        tag("\r\n"),
-    )(i)?;
-    let parsed_string = String::from_utf8_lossy(parsed).to_string();
-    Ok((remaining, Message::Error(parsed_string)))
+
+fn parse_simple_string(mut i: &[u8]) -> Result<(&[u8], Message), &str> {
+    check_tag!(b'+', i);
+    if let Some(pos) = i.windows(2).position(|window| window == CRLF) {
+        let content = &i[..pos];
+        let message = Message::SimpleString(String::from_utf8_lossy(content).to_string());
+        let remaining = &i[pos+2..];
+        Ok((remaining, message))
+    } else {
+        Err("simple string parse error")
+    }
 }
 
-fn parse_signed_integer(i: &[u8]) -> IResult<&[u8], isize> {
-    map_res(
-        pair(opt(one_of("+-")), digit1),
-        |(sign, digits): (Option<char>, &[u8])| {
-            let s = String::from_utf8_lossy(digits);
-            s.parse::<isize>()
-                .map(|mut n| {
-                    if sign == Some('-') {
-                        n = -n;
-                    }
-                    n
-                })
-                .map_err(|_| nom::Err::Error((digits, ErrorKind::Digit)))
-        },
-    )(i)
+fn parse_error(mut i: &[u8]) -> Result<(&[u8], Message), &str> {
+    check_tag!(b'-', i);
+    if let Some(pos) = i.windows(2).position(|window| window == CRLF) {
+        let content = &i[..pos];
+        let message = Message::SimpleString(String::from_utf8_lossy(content).to_string());
+        let remaining = &i[pos+2..];
+        Ok((remaining, message))
+    } else {
+        Err("error parse error")
+    }
 }
 
-fn parse_integer(i: &[u8]) -> IResult<&[u8], Message> {
-    map_res(
-        delimited(tag(":"), parse_signed_integer, tag("\r\n")),
-        // Cursed type hint here because return type cannot be inferred
-        |n: isize| Ok::<Message, Err<nom::error::Error<&[u8]>>>(Message::Integer(n)),
-    )(i)
+fn parse_signed_integer(mut i: &[u8]) -> Result<(&[u8], isize), &str> {
+    let maybe_sign = i.get(0).unwrap();
+    if b"+-".contains(maybe_sign) {
+        i = &i[1..];
+    }
+    if let Some(pos) = i.windows(1).position(|window| !window[0].is_ascii_digit()) {
+        let content = &i[..pos];
+        let mut number: isize = String::from_utf8_lossy(content).parse().unwrap();
+        if *maybe_sign == b'-' { number = -number; }
+        Ok((&i[pos..], number))
+    } else {
+        Err("parse signed int error")
+    }
 }
 
-fn parse_bulk_string(i: &[u8]) -> IResult<&[u8], Message> {
-    let (remaining, length) = preceded(tag("$"), parse_signed_integer)(i)?;
+fn parse_integer(mut i: &[u8]) -> Result<(&[u8], Message), &str> {
+    check_tag!(b':', i);
+    let (i, n) = parse_signed_integer(i).unwrap();
+    let message = Message::Integer(n);
+    Ok((&i[2..], message))
+}
+
+fn parse_bulk_string(mut i: &[u8]) -> Result<(&[u8], Message), &str> {
+    check_tag!(b'$', i);
+    let (mut i, length) = parse_signed_integer(i).unwrap();
 
     if length == -1 {
-        let (remaining, _) = crlf(remaining)?;
-        return Ok((remaining, Message::BulkString(None)));
+        return Ok((&i[2..], Message::BulkString(None)));
     }
 
-    let (remaining, parsed) = delimited(crlf, take(length as usize), crlf)(remaining)?;
-    let value = String::from_utf8_lossy(parsed).to_string();
-    Ok((remaining, Message::BulkString(Some(value))))
-}
-
-fn parse_array(i: &[u8]) -> IResult<&[u8], Message> {
-    let (remaining, length) = delimited(tag("*"), parse_signed_integer, crlf)(i)?;
-
-    if length == -1 {
-        let (remaining, _) = crlf(remaining)?;
-        return Ok((remaining, Message::Array(None)));
-    }
-
+    i = &i[2..]; //CRLF
     let length = length as usize;
-    let (remaining, parsed) = many_m_n(length, length, parse_message)(remaining)?;
-    Ok((remaining, Message::Array(Some(parsed))))
+    let content = &i[..length];
+    let string = String::from_utf8_lossy(content).to_string();
+    let message = Message::BulkString(Some(string));
+    return Ok((&i[length+2..], message));
 }
 
-fn parse_null(i: &[u8]) -> IResult<&[u8], Message> {
-    let (remaining, _) = pair(tag("_"), crlf)(i)?;
-    Ok((remaining, Message::Null))
+fn parse_array(mut i: &[u8]) -> Result<(&[u8], Message), &str> {
+    check_tag!(b'*', i);
+    let (mut i, length) = parse_signed_integer(i).unwrap();
+
+    if length == -1 {
+        return Ok((&i[2..], Message::Array(None)));
+    }
+
+    i = &i[2..]; // CRLF
+    let length = length as usize;
+    let mut messages = Vec::new();
+    for _ in 0..length {
+        let (remaining, message) = parse_message(i).unwrap();
+        i = remaining;
+        messages.push(message);
+    }
+    Ok((i, Message::Array(Some(messages))))
 }
 
-fn parse_bool(i: &[u8]) -> IResult<&[u8], Message> {
-    let (remaining, result) = delimited(
-        tag("#"),
-        alt((value(true, tag("t")), value(false, tag("f")))),
-        crlf,
-    )(i)?;
-    Ok((remaining, Message::Bool(result)))
+fn parse_null(mut i: &[u8]) -> Result<(&[u8], Message), &str> {
+    check_tag!(b'_', i);
+    Ok((&i[2..], Message::Null))
 }
 
-fn parse_double(i: &[u8]) -> IResult<&[u8], Message> {
-    let (remaining, result) = delimited(tag(","), double, crlf)(i)?;
-    Ok((remaining, Message::Double(result)))
+fn parse_bool(mut i: &[u8]) -> Result<(&[u8], Message), &str> {
+    check_tag!(b'#', i);
+    let value = match i.get(0).unwrap() {
+        b't' => true,
+        b'f' => false,
+        _ => panic!(),
+    };
+
+    Ok((&i[3..], Message::Bool(value)))
+}
+
+fn parse_double(mut i: &[u8]) -> Result<(&[u8], Message), &str> {
+    check_tag!(b',', i);
+    if let Some(pos) = i.windows(2).position(|window| window == CRLF) {
+        let content = &i[..pos];
+        let double = str::from_utf8(content).unwrap().parse::<f64>().unwrap();
+        Ok((&i[pos+2..], Message::Double(double)))
+    } else {
+        Err("")
+    }
 }
 
 // Main export
-pub(crate) fn parse_message(i: &[u8]) -> IResult<&[u8], Message> {
-    alt((
-        parse_simple_string,
-        parse_error,
-        parse_integer,
-        parse_bulk_string,
-        parse_array,
-        parse_null,
-        parse_bool,
-        parse_double,
-    ))(i)
+pub(crate) fn parse_message(i: &[u8]) -> Result<(&[u8], Message), &str> {
+    println!("{:?}", String::from_utf8_lossy(i));
+    let tag= i.get(0).unwrap();
+    let (remaining, message) = match *tag {
+        b'+' => parse_simple_string(i),
+        b'-' => parse_error(i),
+        b':' => parse_integer(i),
+        b'$' => parse_bulk_string(i),
+        b'*' => parse_array(i),
+        b'_' => parse_null(i),
+        b'#' => parse_bool(i),
+        b',' => parse_double(i),
+        _ => panic!(),
+    }.unwrap();
+    println!("{:?}", String::from_utf8_lossy(remaining));
+    println!("{:?}", message);
+    Ok((remaining, message))
 }
 
 #[cfg(test)]
