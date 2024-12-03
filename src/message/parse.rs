@@ -18,8 +18,7 @@ fn parse_simple_string(i: &[u8]) -> IResult<&[u8], Message> {
         take_while(|b| b != b'\r' && b != b'\n'),
         tag("\r\n"),
     )(i)?;
-    let parsed_string = String::from_utf8_lossy(parsed).to_string();
-    Ok((remaining, Message::SimpleString(parsed_string)))
+    Ok((remaining, Message::SimpleString(parsed)))
 }
 
 fn parse_error(i: &[u8]) -> IResult<&[u8], Message> {
@@ -28,8 +27,7 @@ fn parse_error(i: &[u8]) -> IResult<&[u8], Message> {
         take_while(|b| b != b'\r' && b != b'\n'),
         tag("\r\n"),
     )(i)?;
-    let parsed_string = String::from_utf8_lossy(parsed).to_string();
-    Ok((remaining, Message::Error(parsed_string)))
+    Ok((remaining, Message::Error(parsed)))
 }
 
 fn parse_signed_integer(i: &[u8]) -> IResult<&[u8], isize> {
@@ -66,8 +64,7 @@ fn parse_bulk_string(i: &[u8]) -> IResult<&[u8], Message> {
     }
 
     let (remaining, parsed) = delimited(crlf, take(length as usize), crlf)(remaining)?;
-    let value = String::from_utf8_lossy(parsed).to_string();
-    Ok((remaining, Message::BulkString(Some(value))))
+    Ok((remaining, Message::BulkString(Some(parsed))))
 }
 
 fn parse_array(i: &[u8]) -> IResult<&[u8], Message> {

@@ -1,14 +1,19 @@
+use std::io::{self, Read, Write};
+
 use dashmap::DashMap;
 use thiserror::Error;
 
-use crate::message::Message;
+use crate::message::{serialise_message, Message};
 type DB = DashMap<Vec<u8>, Vec<u8>>;
+
+const PONG: &[u8] = b"PONG";
+const OK: &[u8] = b"OK";
 
 pub(crate) enum Command<'a> {
     PING,
-    ECHO(&'a str),
-    SET(&'a str, &'a str),
-    GET(&'a str),
+    ECHO(&'a [u8]),
+    SET(&'a [u8], &'a [u8]),
+    GET(&'a [u8]),
 }
 
 #[derive(Debug, Error)]
@@ -23,7 +28,7 @@ pub(crate) enum CommandParseError {
     InvalidArguments(String),
 }
 
-pub(crate) fn parse_command(message: &Message) -> Result<Command, CommandParseError> {
+pub(crate) fn parse_command<'a>(message: &Message<'a>) -> Result<Command<'a>, CommandParseError> {
     // A lot of error handling to do here...
     let messages = message
         .as_array()
@@ -33,15 +38,17 @@ pub(crate) fn parse_command(message: &Message) -> Result<Command, CommandParseEr
         .first()
         .ok_or(CommandParseError::InvalidMessageFormat(message.to_string()))?
         .as_bulk_string()
-        .ok_or(CommandParseError::InvalidCommand(message.to_string()))?;
+        .ok_or(CommandParseError::InvalidCommand(message.to_string()))?
+        .to_vec()
+        .to_ascii_lowercase();
 
     let arguments = &messages[1..];
-    match command.to_lowercase().as_str() {
-        "ping" => parse_ping(arguments),
-        "echo" => parse_echo(arguments),
-        "set" => parse_set(arguments),
-        "get" => parse_get(arguments),
-        unknown_cmd => Err(CommandParseError::InvalidCommand(unknown_cmd.to_string())),
+    match command.as_slice() {
+        b"ping" => parse_ping(arguments),
+        b"echo" => parse_echo(arguments),
+        b"set" => parse_set(arguments),
+        b"get" => parse_get(arguments),
+        unknown_cmd => Err(CommandParseError::InvalidCommand(String::from_utf8_lossy(&unknown_cmd).to_string())),
     }
 }
 
@@ -63,42 +70,44 @@ macro_rules! unwrap_bulk_string {
     };
 }
 
-fn parse_ping(arguments: &[Message]) -> Result<Command, CommandParseError> {
+fn parse_ping<'a>(arguments: &[Message<'a>]) -> Result<Command<'a>, CommandParseError> {
     check_arg_len!(arguments, 0, "ECHO");
     Ok(Command::PING)
 }
 
-fn parse_echo(arguments: &[Message]) -> Result<Command, CommandParseError> {
+fn parse_echo<'a>(arguments: &[Message<'a>]) -> Result<Command<'a>, CommandParseError> {
     check_arg_len!(arguments, 1, "ECHO");
     let echo_string = unwrap_bulk_string!(&arguments[0])?;
     Ok(Command::ECHO(echo_string))
 }
 
-fn parse_set(arguments: &[Message]) -> Result<Command, CommandParseError> {
+fn parse_set<'a>(arguments: &[Message<'a>]) -> Result<Command<'a>, CommandParseError> {
     check_arg_len!(arguments, 2, "SET");
     let key = unwrap_bulk_string!(&arguments[0])?;
     let value = unwrap_bulk_string!(&arguments[1])?;
     Ok(Command::SET(key, value))
 }
 
-fn parse_get(arguments: &[Message]) -> Result<Command, CommandParseError> {
+fn parse_get<'a>(arguments: &[Message<'a>]) -> Result<Command<'a>, CommandParseError> {
     check_arg_len!(arguments, 1, "GET");
     let key = unwrap_bulk_string!(&arguments[0])?;
     Ok(Command::GET(key))
 }
 
-pub(crate) fn handle_command(command: &Command, db: &mut DB) -> Message {
+pub(crate) fn handle_command<W: Write>(command: &Command, db: &mut DB, writer: &mut W) -> io::Result<()>
+{   
     match command {
-        Command::PING => Message::BulkString(Some("PONG".to_string())),
-        Command::ECHO(string) => Message::BulkString(Some(string.to_string())),
+        Command::PING => serialise_message(&Message::BulkString(Some(PONG)), writer),
+        Command::ECHO(string) => serialise_message(&Message::BulkString(Some(string)), writer),
         Command::SET(key, value) => {
             db.insert((*key).into(), (*value).into());
-            Message::BulkString(Some("OK".to_string()))
+            serialise_message(&Message::BulkString(Some(OK)), writer)
         },
         Command::GET(key) => {
-            match db.get::<[u8]>(key.as_bytes()) {
-                Some(value) => Message::BulkString(Some(String::from_utf8_lossy(&value).into())),
-                None => Message::BulkString(None),
+            match db.get::<[u8]>(key) {
+                Some(value) => 
+                    serialise_message(&Message::BulkString(Some(value.as_ref())), writer),
+                None => serialise_message(&Message::BulkString(None), writer),
             }
         }
     }

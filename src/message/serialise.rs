@@ -1,94 +1,87 @@
+use std::io::{self, Write};
+
 use super::Message;
 
 const CRLF: &[u8; 2] = b"\r\n";
 
-pub(crate) fn serialise_message(message: &Message) -> Vec<u8> {
+pub(crate) fn serialise_message<W: Write>(message: &Message, writer: &mut W) -> io::Result<()> {
     match message {
-        Message::SimpleString(string) => serialise_simple_string(string),
-        Message::Error(error) => serialise_error(error),
-        Message::Integer(n) => serialise_integer(*n),
-        Message::BulkString(string) => serialise_bulk_string(string),
-        Message::Array(array) => serialise_array(array),
-        Message::Null => serialise_null(),
-        Message::Bool(b) => serialise_bool(*b),
-        Message::Double(n) => serialise_double(*n),
+        Message::SimpleString(string) => serialise_simple_string(string, writer),
+        Message::Error(error) => serialise_error(error, writer),
+        Message::Integer(n) => serialise_integer(*n, writer),
+        Message::BulkString(string) => serialise_bulk_string(string, writer),
+        Message::Array(array) => serialise_array(array, writer),
+        Message::Null => serialise_null(writer),
+        Message::Bool(b) => serialise_bool(*b, writer),
+        Message::Double(n) => serialise_double(*n, writer),
     }
 }
 
-fn serialise_simple_string(string: &str) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(string.len() + 3);
-    buf.push(b'+');
-    buf.extend_from_slice(string.as_bytes());
-    buf.extend_from_slice(CRLF);
-    buf
+fn serialise_simple_string<W: Write>(string: &[u8], writer: &mut W) -> io::Result<()> {
+    writer.write_all(&[b'+'])?;
+    writer.write_all(string)?;
+    writer.write(CRLF)?;
+    Ok(())
 }
 
-fn serialise_error(error: &str) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(error.len() + 3);
-    buf.push(b'+');
-    buf.extend_from_slice(error.as_bytes());
-    buf.extend_from_slice(CRLF);
-    buf
+fn serialise_error<W: Write>(error: &[u8], writer: &mut W) -> io::Result<()> {
+    writer.write_all(&[b'-'])?;
+    writer.write_all(error)?;
+    writer.write_all(CRLF)?;
+    Ok(())
 }
 
-fn serialise_integer(n: isize) -> Vec<u8> {
-    let n_str = n.to_string();
-    let mut buf = Vec::with_capacity(n_str.len() + 3);
-    buf.push(b':');
-    buf.extend_from_slice(n_str.as_bytes());
-    buf.extend_from_slice(CRLF);
-    buf
+fn serialise_integer<W: Write>(n: isize, writer: &mut W) -> io::Result<()> {
+    writer.write_all(&[b':'])?;
+    writer.write_all(n.to_string().as_bytes())?;
+    writer.write_all(CRLF)?;
+    Ok(())
 }
 
-fn serialise_bulk_string(string: &Option<String>) -> Vec<u8> {
-    if let Some(ref string) = string {
-        let len = string.len();
-        let len_str = len.to_string();
-        let mut buf = Vec::with_capacity(len + len_str.len() + 5);
-        buf.push(b'$');
-        buf.extend_from_slice(len_str.as_bytes());
-        buf.extend_from_slice(CRLF);
-        buf.extend_from_slice(string.as_bytes());
-        buf.extend_from_slice(CRLF);
-        buf
+fn serialise_bulk_string<W: Write>(string: &Option<&[u8]>, writer: &mut W) -> io::Result<()> {
+    if let Some(string) = string {
+        let length = string.len();
+        writer.write_all(&[b'$'])?;
+        writer.write_all(length.to_string().as_bytes())?;
+        writer.write_all(CRLF)?;
+        writer.write_all(string)?;
+        writer.write_all(CRLF)?;
     } else {
-        "$-1\r\n".into()
+        writer.write( "$-1\r\n".as_bytes())?;
     }
+    Ok(())
 }
 
-fn serialise_null() -> Vec<u8> {
-    b"_\r\n".into()
+fn serialise_null<W: Write>(writer: &mut W) -> io::Result<()> {
+    writer.write_all("_\r\n".as_bytes())
 }
 
-fn serialise_bool(b: bool) -> Vec<u8> {
+fn serialise_bool<W: Write>(b: bool, writer: &mut W) -> io::Result<()> {
     if b {
-        "#t\r\n".into()
+        writer.write_all("#t\r\n".as_bytes())
     } else {
-        "#f\r\n".into()
+        writer.write_all("#f\r\n".as_bytes())
     }
 }
 
-fn serialise_double(n: f64) -> Vec<u8> {
-    let n_str = n.to_string();
-    let mut buf = Vec::with_capacity(n_str.len() + 3);
-    buf.push(b',');
-    buf.extend_from_slice(n_str.as_bytes());
-    buf.extend_from_slice(CRLF);
-    buf
+fn serialise_double<W: Write>(n: f64, writer: &mut W) -> io::Result<()> {
+    writer.write_all(",".as_bytes())?;
+    writer.write_all(n.to_string().as_bytes())?;
+    writer.write_all(CRLF)?;
+    Ok(())
 }
 
-fn serialise_array(array: &Option<Vec<Message>>) -> Vec<u8> {
+fn serialise_array<W: Write>(array: &Option<Vec<Message>>, writer: &mut W) -> io::Result<()> {
     if let Some(ref array) = array {
-        let mut buf = Vec::new();
-        let len_str = array.len().to_string();
-        buf.push(b'*');
-        buf.extend_from_slice(len_str.as_bytes());
-        buf.extend_from_slice(CRLF);
+        let length = array.len();
+        writer.write_all("*".as_bytes())?;
+        writer.write_all(length.to_string().as_bytes())?;
+        writer.write_all(CRLF)?;
         for message in array {
-            buf.extend_from_slice(&serialise_message(message));
+            serialise_message(message, writer)?;
         }
-        buf
     } else {
-        "*-1\r\n".into()
+        writer.write_all("*-1\r\n".as_bytes())?;
     }
+    Ok(())
 }
