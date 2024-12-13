@@ -139,7 +139,6 @@ fn parse_double(mut i: &[u8]) -> Result<(&[u8], Message), &str> {
 
 // Main export
 pub(crate) fn parse_message(i: &[u8]) -> Result<(&[u8], Message), &str> {
-    println!("{:?}", String::from_utf8_lossy(i));
     let tag= i.get(0).unwrap();
     let (remaining, message) = match *tag {
         b'+' => parse_simple_string(i),
@@ -152,8 +151,6 @@ pub(crate) fn parse_message(i: &[u8]) -> Result<(&[u8], Message), &str> {
         b',' => parse_double(i),
         _ => panic!(),
     }.unwrap();
-    println!("{:?}", String::from_utf8_lossy(remaining));
-    println!("{:?}", message);
     Ok((remaining, message))
 }
 
